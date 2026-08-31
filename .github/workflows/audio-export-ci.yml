@@ -15,14 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'push' && 'feature/ogg-track-export' || github.ref }}
+          ref: feature/ogg-track-export
       - name: Apply audio export wiring
-        if: github.event_name == 'push' && github.event.head_commit.message != 'feat: wire audio export into playback'
+        if: "github.event_name == 'push' && github.event.head_commit.message != 'feat: wire audio export into playback'"
         run: |
           python3 .github/scripts/wire_audio_export.py
           gofmt -w player/audio_export.go player/player.go audio/chunked-reader.go audio/completed_reader.go daemon/app.go cmd/daemon/cli_config.go
       - name: Commit wiring
-        if: github.event_name == 'push' && github.event.head_commit.message != 'feat: wire audio export into playback'
+        if: "github.event_name == 'push' && github.event.head_commit.message != 'feat: wire audio export into playback'"
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
