@@ -45,6 +45,20 @@ func parseContentRange(resp *http.Response) (start int64, end int64, size int64,
 	return start, end, size, nil
 }
 
+func validateChunkRange(start, end, size int64, idx int) (int64, error) {
+	if size <= 0 {
+		return 0, fmt.Errorf("invalid content range size: %d", size)
+	}
+
+	expectedStart := int64(idx) * DefaultChunkSize
+	expectedEnd := min(size, int64(idx+1)*DefaultChunkSize) - 1
+	if start != expectedStart || end != expectedEnd {
+		return 0, fmt.Errorf("unexpected content range: got bytes %d-%d/%d, expected bytes %d-%d/%d", start, end, size, expectedStart, expectedEnd, size)
+	}
+
+	return end - start + 1, nil
+}
+
 type chunkItem struct {
 	*sync.Cond
 	data     []byte
@@ -110,7 +124,12 @@ func NewHttpChunkedReader(log librespot.Logger, client *http.Client, audioUrl st
 	defer func() { _ = resp.Body.Close() }()
 
 	// parse the Content-Range header with the complete content length
-	_, _, r.len, err = parseContentRange(resp)
+	start, end, size, err := parseContentRange(resp)
+	if err != nil {
+		return nil, fmt.Errorf("invalid first chunk content range response: %w", err)
+	}
+	r.len = size
+	expectedBytes, err := validateChunkRange(start, end, r.len, 0)
 	if err != nil {
 		return nil, fmt.Errorf("invalid first chunk content range response: %w", err)
 	}
@@ -126,6 +145,9 @@ func NewHttpChunkedReader(log librespot.Logger, client *http.Client, audioUrl st
 	r.chunks[0].data, err = io.ReadAll(r.measureLatency(resp.Body))
 	if err != nil {
 		return nil, fmt.Errorf("failed reading first chunk: %w", err)
+	}
+	if int64(len(r.chunks[0].data)) != expectedBytes {
+		return nil, fmt.Errorf("failed reading first chunk: got %d bytes, expected %d", len(r.chunks[0].data), expectedBytes)
 	}
 
 	// The first chunk is fetched eagerly here, so count it towards completion.
@@ -191,9 +213,24 @@ func (r *HttpChunkedReader) downloadAndRead(idx int) ([]byte, error) {
 
 	defer func() { _ = resp.Body.Close() }()
 
+	start, end, size, err := parseContentRange(resp)
+	if err != nil {
+		return nil, fmt.Errorf("invalid chunk %d content range response: %w", idx, err)
+	}
+	if size != r.len {
+		return nil, fmt.Errorf("invalid chunk %d content range response: got total size %d, expected %d", idx, size, r.len)
+	}
+	expectedBytes, err := validateChunkRange(start, end, size, idx)
+	if err != nil {
+		return nil, fmt.Errorf("invalid chunk %d content range response: %w", idx, err)
+	}
+
 	data, err := io.ReadAll(r.measureLatency(resp.Body))
 	if err != nil {
 		return nil, fmt.Errorf("failed reading chunk %d: %w", idx, r.closeErr(err))
+	}
+	if int64(len(data)) != expectedBytes {
+		return nil, r.closeErr(fmt.Errorf("failed reading chunk %d: got %d bytes, expected %d", idx, len(data), expectedBytes))
 	}
 
 	return data, nil

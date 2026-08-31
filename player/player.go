@@ -12,6 +12,7 @@ import (
 
 	librespot "github.com/devgianlu/go-librespot"
 	"github.com/devgianlu/go-librespot/audio"
+	"github.com/devgianlu/go-librespot/audioexport"
 	"github.com/devgianlu/go-librespot/cache"
 	"github.com/devgianlu/go-librespot/flac"
 	"github.com/devgianlu/go-librespot/mp3"
@@ -749,8 +750,10 @@ func (p *Player) NewStream(ctx context.Context, client *http.Client, spotId libr
 	var normalisationFactor float32
 	var media *librespot.Media
 	var file *metadatapb.AudioFile
+	var trackMeta *metadatapb.Track
 	if spotId.Type() == librespot.SpotifyIdTypeTrack {
-		trackMeta, err := p.getUnrestrictedTrack(ctx, spotId)
+		var err error
+		trackMeta, err = p.getUnrestrictedTrack(ctx, spotId)
 		if err != nil {
 			return nil, err
 		}
@@ -822,6 +825,19 @@ func (p *Player) NewStream(ctx context.Context, client *http.Client, spotId libr
 		log.Debugf("audio export skipped for unsupported format %s", file.Format.String())
 	}
 
+	var exportMetadataJSON []byte
+	if exportOgg && trackMeta != nil {
+		snapshot := audioexport.NewTrackMetadata(
+			spotId.Uri(), spotId.Base62(), requestedId.Uri(), requestedId.Base62(), requestedId.Hex(), trackMeta, file,
+		)
+		var metadataErr error
+		exportMetadataJSON, metadataErr = snapshot.MarshalJSONIndented()
+		if metadataErr != nil {
+			log.WithError(metadataErr).Warnf("failed preparing audio export metadata")
+			exportMetadataJSON = nil
+		}
+	}
+
 	audioKey, err := p.retrieveAudioKey(ctx, spotId, file.FileId)
 	if err != nil {
 		return nil, fmt.Errorf("failed retrieving audio key: %w", err)
@@ -853,12 +869,13 @@ func (p *Player) NewStream(ctx context.Context, client *http.Client, spotId libr
 			if exportOgg {
 				fileID := append([]byte(nil), file.FileId...)
 				key := append([]byte(nil), audioKey...)
+				metadataJSON := append([]byte(nil), exportMetadataJSON...)
 				if exportReader, ok := p.cache.File(fileID); ok {
 					go func() {
 						if closer, ok := exportReader.(io.Closer); ok {
 							defer closer.Close()
 						}
-						p.exportOgg(fileID, exportReader, exportReader.Size(), key)
+						p.exportOgg(fileID, exportReader, exportReader.Size(), key, metadataJSON)
 					}()
 				}
 			}
@@ -885,6 +902,7 @@ func (p *Player) NewStream(ctx context.Context, client *http.Client, spotId libr
 		if p.cache != nil || exportOgg {
 			fileID := append([]byte(nil), file.FileId...)
 			key := append([]byte(nil), audioKey...)
+			metadataJSON := append([]byte(nil), exportMetadataJSON...)
 			httpStream.OnComplete(func(r io.ReaderAt, size int64) {
 				if p.cache != nil {
 					if err := p.cache.SaveFile(fileID, io.NewSectionReader(r, 0, size)); err != nil {
@@ -892,7 +910,7 @@ func (p *Player) NewStream(ctx context.Context, client *http.Client, spotId libr
 					}
 				}
 				if exportOgg {
-					p.exportOgg(fileID, r, size, key)
+					p.exportOgg(fileID, r, size, key, metadataJSON)
 				}
 			})
 		}

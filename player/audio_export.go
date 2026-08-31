@@ -20,15 +20,29 @@ func ConfigureOggExporter(log librespot.Logger, enabled bool, directory string, 
 
 func oggExportEnabled() bool { return oggExporter != nil }
 
-func (p *Player) exportOgg(fileID []byte, encrypted io.ReaderAt, size int64, key []byte) {
+func (p *Player) exportOgg(fileID []byte, encrypted io.ReaderAt, size int64, key, metadataJSON []byte) {
 	if oggExporter == nil {
 		return
 	}
 	file := hex.EncodeToString(fileID)
-	path, err := oggExporter.Export(fileID, encrypted, size, key)
+	result, err := oggExporter.Export(fileID, encrypted, size, key)
 	if err != nil {
 		p.log.WithError(err).WithField("file", file).Warnf("audio export failed")
 		return
 	}
-	p.log.WithField("file", file).WithField("path", path).Infof("audio export completed")
+	if result.Status == audioexport.ExportAlreadyExists {
+		p.log.WithField("file", file).WithField("path", result.Path).Infof("audio export already exists")
+	} else {
+		p.log.WithField("file", file).WithField("path", result.Path).Infof("audio export completed")
+	}
+
+	if len(metadataJSON) == 0 {
+		return
+	}
+	metadataPath, err := oggExporter.ExportMetadata(fileID, metadataJSON)
+	if err != nil {
+		p.log.WithError(err).WithField("file", file).Warnf("audio export metadata failed")
+		return
+	}
+	p.log.WithField("file", file).WithField("path", metadataPath).Infof("audio export metadata completed")
 }

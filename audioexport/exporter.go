@@ -20,6 +20,18 @@ type Exporter struct {
 	overwrite bool
 }
 
+type ExportStatus uint8
+
+const (
+	ExportCreated ExportStatus = iota + 1
+	ExportAlreadyExists
+)
+
+type ExportResult struct {
+	Path   string
+	Status ExportStatus
+}
+
 func New(log librespot.Logger, directory string, overwrite bool) *Exporter {
 	return &Exporter{log: log, directory: directory, overwrite: overwrite}
 }
@@ -27,103 +39,61 @@ func New(log librespot.Logger, directory string, overwrite bool) *Exporter {
 // ExportMetadata writes a JSON sidecar next to the exported audio using the
 // same Spotify file ID. Metadata export is atomic and best-effort at the caller.
 func (e *Exporter) ExportMetadata(fileID []byte, data []byte) (string, error) {
-	if len(fileID) == 0 {
-		return "", fmt.Errorf("audio export metadata: empty file id")
-	}
-	if e.directory == "" {
-		return "", fmt.Errorf("audio export metadata: empty directory")
-	}
-	if err := os.MkdirAll(e.directory, 0o755); err != nil {
-		return "", fmt.Errorf("audio export metadata: create directory: %w", err)
-	}
-
-	name := hex.EncodeToString(fileID) + ".json"
-	finalPath := filepath.Join(e.directory, name)
-	if !e.overwrite {
-		if _, err := os.Stat(finalPath); err == nil {
-			return finalPath, nil
-		} else if !os.IsNotExist(err) {
-			return "", fmt.Errorf("audio export metadata: stat target: %w", err)
-		}
-	}
-
-	tmp, err := os.CreateTemp(e.directory, "."+name+".*.part")
-	if err != nil {
-		return "", fmt.Errorf("audio export metadata: create temporary file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	committed := false
-	defer func() {
-		_ = tmp.Close()
-		if !committed {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		return "", fmt.Errorf("audio export metadata: write JSON: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return "", fmt.Errorf("audio export metadata: sync JSON: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("audio export metadata: close JSON: %w", err)
-	}
-	if !e.overwrite {
-		if _, err := os.Stat(finalPath); err == nil {
-			return finalPath, nil
-		} else if !os.IsNotExist(err) {
-			return "", fmt.Errorf("audio export metadata: stat target before rename: %w", err)
-		}
-	}
-	if err := os.Rename(tmpPath, finalPath); err != nil {
-		return "", fmt.Errorf("audio export metadata: finalize JSON: %w", err)
-	}
-	committed = true
-	return finalPath, nil
+	return writeMetadata(e.directory, e.overwrite, fileID, data)
 }
 
 // Export writes one complete encrypted Spotify audio file as an independent
 // clean Ogg/Vorbis file. The supplied reader must expose the complete encrypted
 // file and remain valid for the duration of this call.
-func (e *Exporter) Export(fileID []byte, encrypted io.ReaderAt, size int64, key []byte) (string, error) {
+func (e *Exporter) Export(fileID []byte, encrypted io.ReaderAt, size int64, key []byte) (ExportResult, error) {
 	if len(fileID) == 0 {
-		return "", fmt.Errorf("audio export: empty file id")
+		return ExportResult{}, fmt.Errorf("audio export: empty file id")
 	}
 	if size <= 0 {
-		return "", fmt.Errorf("audio export: invalid encrypted size %d", size)
+		return ExportResult{}, fmt.Errorf("audio export: invalid encrypted size %d", size)
 	}
 	if e.directory == "" {
-		return "", fmt.Errorf("audio export: empty directory")
+		return ExportResult{}, fmt.Errorf("audio export: empty directory")
 	}
 
 	if err := os.MkdirAll(e.directory, 0o755); err != nil {
-		return "", fmt.Errorf("audio export: create directory: %w", err)
+		return ExportResult{}, fmt.Errorf("audio export: create directory: %w", err)
 	}
 
 	name := hex.EncodeToString(fileID) + ".ogg"
 	finalPath := filepath.Join(e.directory, name)
 	if !e.overwrite {
-		if _, err := os.Stat(finalPath); err == nil {
-			return finalPath, nil
+		if info, err := os.Stat(finalPath); err == nil {
+			if !info.Mode().IsRegular() {
+				return ExportResult{}, fmt.Errorf("audio export: existing target is not a regular file: %s", finalPath)
+			}
+			return ExportResult{Path: finalPath, Status: ExportAlreadyExists}, nil
 		} else if !os.IsNotExist(err) {
-			return "", fmt.Errorf("audio export: stat target: %w", err)
+			return ExportResult{}, fmt.Errorf("audio export: stat target: %w", err)
 		}
 	}
 
 	decryptor, err := audio.NewAesAudioDecryptor(encrypted, key)
 	if err != nil {
-		return "", fmt.Errorf("audio export: initialize decryptor: %w", err)
+		return ExportResult{}, fmt.Errorf("audio export: initialize decryptor: %w", err)
 	}
 
 	cleanOgg, _, err := vorbis.ExtractMetadataPage(e.log, decryptor, size)
 	if err != nil {
-		return "", fmt.Errorf("audio export: extract metadata page: %w", err)
+		return ExportResult{}, fmt.Errorf("audio export: extract metadata page: %w", err)
 	}
 
+	status, err := e.writeOgg(name, finalPath, cleanOgg)
+	if err != nil {
+		return ExportResult{}, err
+	}
+	return ExportResult{Path: finalPath, Status: status}, nil
+}
+
+func (e *Exporter) writeOgg(name, finalPath string, cleanOgg librespot.SizedReadAtSeeker) (ExportStatus, error) {
 	tmp, err := os.CreateTemp(e.directory, "."+name+".*.part")
 	if err != nil {
-		return "", fmt.Errorf("audio export: create temporary file: %w", err)
+		return 0, fmt.Errorf("audio export: create temporary file: %w", err)
 	}
 	tmpPath := tmp.Name()
 	committed := false
@@ -134,29 +104,36 @@ func (e *Exporter) Export(fileID []byte, encrypted io.ReaderAt, size int64, key 
 		}
 	}()
 
-	if _, err := io.Copy(tmp, cleanOgg); err != nil {
-		return "", fmt.Errorf("audio export: write Ogg: %w", err)
+	written, err := io.Copy(tmp, cleanOgg)
+	if err != nil {
+		return 0, fmt.Errorf("audio export: write Ogg: %w", err)
+	}
+	if expected := cleanOgg.Size(); written != expected {
+		return 0, fmt.Errorf("audio export: incomplete encrypted source: wrote %d of %d clean Ogg bytes", written, expected)
 	}
 	if err := tmp.Sync(); err != nil {
-		return "", fmt.Errorf("audio export: sync Ogg: %w", err)
+		return 0, fmt.Errorf("audio export: sync Ogg: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("audio export: close Ogg: %w", err)
+		return 0, fmt.Errorf("audio export: close Ogg: %w", err)
 	}
 
 	if !e.overwrite {
 		// Re-check after writing to reduce the chance that concurrent exports of
 		// the same Spotify file replace an already completed target.
-		if _, err := os.Stat(finalPath); err == nil {
-			return finalPath, nil
+		if info, err := os.Stat(finalPath); err == nil {
+			if !info.Mode().IsRegular() {
+				return 0, fmt.Errorf("audio export: existing target is not a regular file: %s", finalPath)
+			}
+			return ExportAlreadyExists, nil
 		} else if !os.IsNotExist(err) {
-			return "", fmt.Errorf("audio export: stat target before rename: %w", err)
+			return 0, fmt.Errorf("audio export: stat target before rename: %w", err)
 		}
 	}
 
 	if err := os.Rename(tmpPath, finalPath); err != nil {
-		return "", fmt.Errorf("audio export: finalize Ogg: %w", err)
+		return 0, fmt.Errorf("audio export: finalize Ogg: %w", err)
 	}
 	committed = true
-	return finalPath, nil
+	return ExportCreated, nil
 }
