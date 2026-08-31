@@ -44,7 +44,7 @@ type Config struct {
 	// "default", "small", "medium", "large", "xlarge".
 	ImageSize string
 
-	Cache CacheConfig
+	Cache       CacheConfig
 	AudioExport AudioExportConfig
 
 	Credentials CredentialsConfig
@@ -64,7 +64,7 @@ type CacheConfig struct {
 
 // AudioExportConfig configures best-effort per-track clean Ogg/Vorbis export.
 type AudioExportConfig struct {
-	Enabled bool
+	Enabled   bool
 	Directory string
 	Overwrite bool
 }
