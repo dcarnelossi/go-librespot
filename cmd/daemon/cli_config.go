@@ -82,6 +82,12 @@ type cliConfig struct {
 		SizeLimit string `koanf:"size_limit"`
 	} `koanf:"cache"`
 
+	AudioExport struct {
+		Enabled   bool   `koanf:"enabled"`
+		Directory string `koanf:"directory"`
+		Overwrite bool   `koanf:"overwrite"`
+	} `koanf:"audio_export"`
+
 	Credentials struct {
 		Type        string `koanf:"type"`
 		Interactive struct {
@@ -149,6 +155,12 @@ func (c *cliConfig) toDaemonConfig() *daemon.Config {
 	}
 	// The value is validated in loadCLIConfig, so the error is unreachable here.
 	dc.Cache.SizeLimit, _ = parseSize(c.Cache.SizeLimit)
+	dc.AudioExport.Enabled = c.AudioExport.Enabled
+	dc.AudioExport.Directory = c.AudioExport.Directory
+	dc.AudioExport.Overwrite = c.AudioExport.Overwrite
+	if dc.AudioExport.Enabled && dc.AudioExport.Directory == "" {
+		dc.AudioExport.Directory = filepath.Join(c.ConfigDir, "audio-export")
+	}
 	dc.Credentials.Type = c.Credentials.Type
 	dc.Credentials.Interactive.CallbackPort = c.Credentials.Interactive.CallbackPort
 	dc.Credentials.SpotifyToken.Username = c.Credentials.SpotifyToken.Username
@@ -207,8 +219,10 @@ func loadCLIConfig(cfg *cliConfig) error {
 
 		"credentials.type": "zeroconf",
 
-		"cache.enabled":    false,
-		"cache.size_limit": "1GB",
+		"cache.enabled":          false,
+		"cache.size_limit":       "1GB",
+		"audio_export.enabled":   false,
+		"audio_export.overwrite": false,
 
 		"zeroconf_backend": "builtin",
 

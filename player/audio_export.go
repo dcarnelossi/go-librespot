@@ -10,13 +10,15 @@ import (
 
 var oggExporter *audioexport.Exporter
 
-func configureOggExporter(log librespot.Logger, enabled bool, directory string, overwrite bool) {
+func ConfigureOggExporter(log librespot.Logger, enabled bool, directory string, overwrite bool) {
 	if !enabled {
 		oggExporter = nil
 		return
 	}
 	oggExporter = audioexport.New(log, directory, overwrite)
 }
+
+func oggExportEnabled() bool { return oggExporter != nil }
 
 func (p *Player) exportOgg(fileID []byte, encrypted io.ReaderAt, size int64, key []byte) {
 	if oggExporter == nil {

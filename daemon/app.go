@@ -131,6 +131,8 @@ func New(opts *Options) (*App, error) {
 		app.mpris = mpris.DummyServer{}
 	}
 
+	player.ConfigureOggExporter(app.log, app.cfg.AudioExport.Enabled, app.cfg.AudioExport.Directory, app.cfg.AudioExport.Overwrite)
+
 	if app.cfg.Cache.Enabled && app.cfg.Cache.Dir != "" {
 		app.audioCache, err = cache.New(app.log, app.cfg.Cache.Dir, app.cfg.Cache.SizeLimit)
 		if err != nil {

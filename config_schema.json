@@ -193,6 +193,28 @@
             }
           }
         },
+        "audio_export": {
+          "type": "object",
+          "description": "Best-effort export of each complete decrypted Ogg/Vorbis track before PCM decoding",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether per-track Ogg/Vorbis export is enabled",
+              "default": false
+            },
+            "directory": {
+              "type": "string",
+              "description": "Directory for exported .ogg files; defaults to <config_dir>/audio-export when enabled",
+              "default": ""
+            },
+            "overwrite": {
+              "type": "boolean",
+              "description": "Whether an existing completed export may be replaced",
+              "default": false
+            }
+          }
+        },
         "zeroconf_enabled": {
           "type": "boolean",
           "description": "Whether Zeroconf discovery should always be enabled (even when logging in with credentials)",

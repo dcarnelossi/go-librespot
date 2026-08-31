@@ -414,7 +414,8 @@ func (r *HttpChunkedReader) maybeFireComplete() {
 
 	r.onCompleteFired = true
 	cb := r.onComplete
-	go cb(r, r.len)
+	completed := newCompletedReaderAt(r.chunks, r.len)
+	go cb(completed, r.len)
 }
 
 func (r *HttpChunkedReader) Url() *url.URL {
