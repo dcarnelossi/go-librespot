@@ -45,6 +45,7 @@ type Config struct {
 	ImageSize string
 
 	Cache CacheConfig
+	AudioExport AudioExportConfig
 
 	Credentials CredentialsConfig
 }
@@ -59,6 +60,13 @@ type CacheConfig struct {
 	// SizeLimit is the maximum total size of the cached audio files in bytes.
 	// A value of zero disables eviction (unbounded cache).
 	SizeLimit int64
+}
+
+// AudioExportConfig configures best-effort per-track clean Ogg/Vorbis export.
+type AudioExportConfig struct {
+	Enabled bool
+	Directory string
+	Overwrite bool
 }
 
 type CredentialsConfig struct {
