@@ -24,6 +24,65 @@ func New(log librespot.Logger, directory string, overwrite bool) *Exporter {
 	return &Exporter{log: log, directory: directory, overwrite: overwrite}
 }
 
+// ExportMetadata writes a JSON sidecar next to the exported audio using the
+// same Spotify file ID. Metadata export is atomic and best-effort at the caller.
+func (e *Exporter) ExportMetadata(fileID []byte, data []byte) (string, error) {
+	if len(fileID) == 0 {
+		return "", fmt.Errorf("audio export metadata: empty file id")
+	}
+	if e.directory == "" {
+		return "", fmt.Errorf("audio export metadata: empty directory")
+	}
+	if err := os.MkdirAll(e.directory, 0o755); err != nil {
+		return "", fmt.Errorf("audio export metadata: create directory: %w", err)
+	}
+
+	name := hex.EncodeToString(fileID) + ".json"
+	finalPath := filepath.Join(e.directory, name)
+	if !e.overwrite {
+		if _, err := os.Stat(finalPath); err == nil {
+			return finalPath, nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("audio export metadata: stat target: %w", err)
+		}
+	}
+
+	tmp, err := os.CreateTemp(e.directory, "."+name+".*.part")
+	if err != nil {
+		return "", fmt.Errorf("audio export metadata: create temporary file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	committed := false
+	defer func() {
+		_ = tmp.Close()
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		return "", fmt.Errorf("audio export metadata: write JSON: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return "", fmt.Errorf("audio export metadata: sync JSON: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("audio export metadata: close JSON: %w", err)
+	}
+	if !e.overwrite {
+		if _, err := os.Stat(finalPath); err == nil {
+			return finalPath, nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("audio export metadata: stat target before rename: %w", err)
+		}
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		return "", fmt.Errorf("audio export metadata: finalize JSON: %w", err)
+	}
+	committed = true
+	return finalPath, nil
+}
+
 // Export writes one complete encrypted Spotify audio file as an independent
 // clean Ogg/Vorbis file. The supplied reader must expose the complete encrypted
 // file and remain valid for the duration of this call.
