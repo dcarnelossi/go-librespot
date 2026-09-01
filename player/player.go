@@ -12,6 +12,7 @@ import (
 
 	librespot "github.com/devgianlu/go-librespot"
 	"github.com/devgianlu/go-librespot/audio"
+	"github.com/devgianlu/go-librespot/audioexport"
 	"github.com/devgianlu/go-librespot/cache"
 	"github.com/devgianlu/go-librespot/flac"
 	"github.com/devgianlu/go-librespot/mp3"
@@ -749,8 +750,10 @@ func (p *Player) NewStream(ctx context.Context, client *http.Client, spotId libr
 	var normalisationFactor float32
 	var media *librespot.Media
 	var file *metadatapb.AudioFile
+	var trackMeta *metadatapb.Track
 	if spotId.Type() == librespot.SpotifyIdTypeTrack {
-		trackMeta, err := p.getUnrestrictedTrack(ctx, spotId)
+		var err error
+		trackMeta, err = p.getUnrestrictedTrack(ctx, spotId)
 		if err != nil {
 			return nil, err
 		}
@@ -816,6 +819,25 @@ func (p *Player) NewStream(ctx context.Context, client *http.Client, spotId libr
 
 	log.Debugf("selected format %s (%x)", file.Format.String(), file.FileId)
 
+	audioFormat := GetAudioFileFormatAudioFormat(*file.Format)
+	exportOgg := oggExportEnabled() && audioFormat == AudioFormatOGGVorbis
+	if oggExportEnabled() && !exportOgg {
+		log.Debugf("audio export skipped for unsupported format %s", file.Format.String())
+	}
+
+	var exportMetadataJSON []byte
+	if exportOgg && trackMeta != nil {
+		snapshot := audioexport.NewTrackMetadata(
+			spotId.Uri(), spotId.Base62(), requestedId.Uri(), requestedId.Base62(), requestedId.Hex(), trackMeta, file,
+		)
+		var metadataErr error
+		exportMetadataJSON, metadataErr = snapshot.MarshalJSONIndented()
+		if metadataErr != nil {
+			log.WithError(metadataErr).Warnf("failed preparing audio export metadata")
+			exportMetadataJSON = nil
+		}
+	}
+
 	audioKey, err := p.retrieveAudioKey(ctx, spotId, file.FileId)
 	if err != nil {
 		return nil, fmt.Errorf("failed retrieving audio key: %w", err)
@@ -844,6 +866,19 @@ func (p *Player) NewStream(ctx context.Context, client *http.Client, spotId libr
 		if cached, ok := p.cache.File(file.FileId); ok {
 			log.Debugf("using cached audio file (%d bytes)", cached.Size())
 			rawStream = cached
+			if exportOgg {
+				fileID := append([]byte(nil), file.FileId...)
+				key := append([]byte(nil), audioKey...)
+				metadataJSON := append([]byte(nil), exportMetadataJSON...)
+				if exportReader, ok := p.cache.File(fileID); ok {
+					go func() {
+						if closer, ok := exportReader.(io.Closer); ok {
+							defer closer.Close()
+						}
+						p.exportOgg(fileID, exportReader, exportReader.Size(), key, metadataJSON)
+					}()
+				}
+			}
 		}
 	}
 
@@ -862,14 +897,20 @@ func (p *Player) NewStream(ctx context.Context, client *http.Client, spotId libr
 
 		p.events.PostStreamInitHttpChunkReader(playbackId, httpStream)
 
-		// Persist the encrypted file to the cache once it has been fully
-		// downloaded. This is best-effort: caching failures never affect
-		// playback.
-		if p.cache != nil {
-			fileId := file.FileId
+		// Persist/cache and export only after every encrypted chunk is present.
+		// Both operations are best-effort and never affect playback.
+		if p.cache != nil || exportOgg {
+			fileID := append([]byte(nil), file.FileId...)
+			key := append([]byte(nil), audioKey...)
+			metadataJSON := append([]byte(nil), exportMetadataJSON...)
 			httpStream.OnComplete(func(r io.ReaderAt, size int64) {
-				if err := p.cache.SaveFile(fileId, io.NewSectionReader(r, 0, size)); err != nil {
-					log.WithError(err).Warnf("failed caching audio file")
+				if p.cache != nil {
+					if err := p.cache.SaveFile(fileID, io.NewSectionReader(r, 0, size)); err != nil {
+						log.WithError(err).Warnf("failed caching audio file")
+					}
+				}
+				if exportOgg {
+					p.exportOgg(fileID, r, size, key, metadataJSON)
 				}
 			})
 		}
@@ -885,7 +926,6 @@ func (p *Player) NewStream(ctx context.Context, client *http.Client, spotId libr
 	var stream librespot.AudioSource
 	var sampleRate, bitDepth int32
 
-	audioFormat := GetAudioFileFormatAudioFormat(*file.Format)
 	if audioFormat == AudioFormatOGGVorbis {
 		audioStream, meta, err := vorbis.ExtractMetadataPage(p.log, decryptedStream, rawStream.Size())
 		if err != nil {

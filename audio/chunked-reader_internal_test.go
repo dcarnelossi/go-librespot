@@ -101,6 +101,31 @@ func TestParseContentRange(t *testing.T) {
 	}
 }
 
+func TestShortPartialContentDoesNotCompleteChunk(t *testing.T) {
+	reader := newFetchTestReader(t, roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return partialContentResponse("short"), nil
+	}))
+	t.Cleanup(func() { _ = reader.Close() })
+
+	_, err := reader.fetchChunk(0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "got 5 bytes, expected 524288")
+	assert.Nil(t, reader.chunks[0].data)
+	assert.Equal(t, 0, reader.completedChunks)
+}
+
+func TestShortFirstPartialContentIsRejected(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		resp := partialContentResponse("short")
+		resp.Header.Set("Content-Range", "bytes 0-9/10")
+		return resp, nil
+	})}
+
+	_, err := NewHttpChunkedReader(&librespot.NullLogger{}, client, "https://example.com/audio")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "got 5 bytes, expected 10")
+}
+
 func TestCloseCancelsConcurrentFetchChunkCallers(t *testing.T) {
 	transport, started := newBlockingRoundTripper()
 	reader := newFetchTestReader(t, transport)
@@ -170,12 +195,9 @@ func TestCloseBeforeChunkPublishesReturnsErrClosed(t *testing.T) {
 	}))
 
 	reader := newFetchTestReader(t, roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusPartialContent,
-			Status:     "206 Partial Content",
-			Body:       body,
-			Header:     http.Header{},
-		}, nil
+		resp := partialContentResponse("")
+		resp.Body = body
+		return resp, nil
 	}))
 
 	errCh := make(chan error, 1)
@@ -216,12 +238,9 @@ func TestCloseNormalizesBodyReadTransportErrors(t *testing.T) {
 	}))
 
 	reader.client.Transport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusPartialContent,
-			Status:     "206 Partial Content",
-			Body:       body,
-			Header:     http.Header{},
-		}, nil
+		resp := partialContentResponse("")
+		resp.Body = body
+		return resp, nil
 	})
 
 	errCh := make(chan error, 1)
@@ -256,6 +275,17 @@ type readerFunc func([]byte) (int, error)
 
 func (fn readerFunc) Read(p []byte) (int, error) {
 	return fn(p)
+}
+
+func partialContentResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusPartialContent,
+		Status:     "206 Partial Content",
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header: http.Header{
+			"Content-Range": []string{"bytes 0-524287/524288"},
+		},
+	}
 }
 
 func newFetchTestReader(t *testing.T, transport http.RoundTripper) *HttpChunkedReader {
