@@ -39,7 +39,14 @@ func New(log librespot.Logger, directory string, overwrite bool) *Exporter {
 // ExportMetadata writes a JSON sidecar next to the exported audio using the
 // same Spotify file ID. Metadata export is atomic and best-effort at the caller.
 func (e *Exporter) ExportMetadata(fileID []byte, data []byte) (string, error) {
-	return writeMetadata(e.directory, e.overwrite, fileID, data)
+	path, err := writeMetadata(e.directory, e.overwrite, fileID, data)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(path, 0o664); err != nil {
+		return "", fmt.Errorf("audio export metadata: chmod JSON: %w", err)
+	}
+	return path, nil
 }
 
 // Export writes one complete encrypted Spotify audio file as an independent
@@ -67,6 +74,9 @@ func (e *Exporter) Export(fileID []byte, encrypted io.ReaderAt, size int64, key 
 			if !info.Mode().IsRegular() {
 				return ExportResult{}, fmt.Errorf("audio export: existing target is not a regular file: %s", finalPath)
 			}
+			if err := os.Chmod(finalPath, 0o664); err != nil {
+				return ExportResult{}, fmt.Errorf("audio export: chmod existing Ogg: %w", err)
+			}
 			return ExportResult{Path: finalPath, Status: ExportAlreadyExists}, nil
 		} else if !os.IsNotExist(err) {
 			return ExportResult{}, fmt.Errorf("audio export: stat target: %w", err)
@@ -86,6 +96,9 @@ func (e *Exporter) Export(fileID []byte, encrypted io.ReaderAt, size int64, key 
 	status, err := e.writeOgg(name, finalPath, cleanOgg)
 	if err != nil {
 		return ExportResult{}, err
+	}
+	if err := os.Chmod(finalPath, 0o664); err != nil {
+		return ExportResult{}, fmt.Errorf("audio export: chmod Ogg: %w", err)
 	}
 	return ExportResult{Path: finalPath, Status: status}, nil
 }
